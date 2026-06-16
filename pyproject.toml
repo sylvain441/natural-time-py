@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "natural-time-py"
+version = "0.1.0"
+description = "Python implementation of the Natural Time calendar and solar/lunar helpers."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "CC0-1.0"
+authors = [
+  { name = "Sylvain 441" }
+]
+keywords = ["natural-time", "calendar", "solar", "home-assistant"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: CC0 1.0 Universal (CC0 1.0) Public Domain Dedication",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Home Automation",
+]
+dependencies = [
+  "astronomy-engine==2.1.19",
+]
+
+[project.urls]
+Homepage = "https://naturaltime.app/"
+Repository = "https://github.com/sylvain441/natural-time-js"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
