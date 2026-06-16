@@ -28,6 +28,10 @@ class NaturalDateTest(unittest.TestCase):
         self.assertIn("NTZ", date.to_string())
         self.assertRegex(date.to_time_string(), r"^\d{3}°\d{2}$")
 
+    def test_day_before_artificial_time_matches_js_flooring(self) -> None:
+        date = NaturalDate(1342073591648, -180)
+        self.assertEqual(date.day, -164)
+
 
 class AstronomyTest(unittest.TestCase):
     def test_sun_position_has_signed_elevation(self) -> None:

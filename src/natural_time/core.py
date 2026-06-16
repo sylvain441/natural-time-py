@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from math import isfinite, trunc
+from math import floor, isfinite, trunc
 from typing import Any
 
 from .seasons import december_solstice
@@ -112,7 +112,7 @@ class NaturalDate:
         time_since_local_year_start = (unix_time - year_start) / MILLISECONDS_PER_DAY
         end_year = _utc_datetime(END_OF_ARTIFICIAL_TIME).year
         year = _utc_datetime(year_start).year - end_year + 1
-        day = trunc(
+        day = floor(
             (unix_time - (END_OF_ARTIFICIAL_TIME + (-effective_longitude + 180) * MILLISECONDS_PER_DAY / 360))
             / MILLISECONDS_PER_DAY
         )
