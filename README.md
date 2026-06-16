@@ -6,7 +6,7 @@ Python port of the Natural Time paradigm, prepared for Home Assistant.
 
 This repository is a Python port of [`natural-time-js`](https://github.com/sylvain441/natural-time-js). The JavaScript library is the reference implementation. This port is intended to follow it closely, especially for the Natural Time calendar model and the Astronomy Engine based solar/lunar calculations.
 
-The port has initial tests and golden-vector spot checks, but it has not yet received a deep independent review. Treat it as an early implementation until the full JavaScript golden vector suite is automated in CI.
+The port has initial tests, a golden-vector spot check, and has been compared locally against the JavaScript reference across a broader set of calendar, solar, lunar, longitude precision, and polar-latitude cases. It has not yet received a deep independent review or CI-backed parity suite, so treat it as an early implementation.
 
 ## Astronomy Reference
 
@@ -37,5 +37,5 @@ print(sun.azimuth, sun.elevation)
 ## Tests
 
 ```bash
-python -m unittest
+PYTHONPATH=src python -m unittest discover -s tests
 ```

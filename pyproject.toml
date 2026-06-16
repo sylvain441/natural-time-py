@@ -29,7 +29,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://naturaltime.app/"
-Repository = "https://github.com/sylvain441/natural-time-js"
+Repository = "https://github.com/sylvain441/natural-time-py"
+Reference = "https://github.com/sylvain441/natural-time-js"
 
 [tool.setuptools.package-dir]
 "" = "src"
