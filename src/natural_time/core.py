@@ -1,193 +1,190 @@
-"""Core Natural Time calendar calculations."""
+"""The Natural Time calendar: an instant, a longitude, and nothing else.
+
+Every instant is an integer of Unix milliseconds, as in natural-time-js. The
+arithmetic below repeats the JavaScript reference operation for operation, so
+both give the same answer down to the last bit of a float.
+"""
 
 from __future__ import annotations
 
+import math
+import time as clock
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from math import floor, isfinite, trunc
-from typing import Any
+from numbers import Real
 
-from .seasons import december_solstice
+import astronomy
 
 MILLISECONDS_PER_DAY = 86_400_000
-END_OF_ARTIFICIAL_TIME = int(datetime(2012, 12, 21, 12, tzinfo=UTC).timestamp() * 1000)
+# 2012-12-21T12:00:00Z, the noon that closed artificial time. Year 001 opens
+# here at longitude 180, and half a day later at the meridian.
+END_OF_ARTIFICIAL_TIME = 1_356_091_200_000
+
+# Floats cannot hold 73.57: times 100 it is 7356.999999999999, and a plain cut would
+# move the observer to 73.56. One part in a million million, added before the cut,
+# puts it back. Same hair as JS.
+_HAIR = 1.000000000001
+
+_J2000 = 946_728_000_000  # 2000-01-01T12:00:00Z, where the engine counts from
+_JS_DATE_LIMIT = 8_640_000_000_000_000  # what a JS Date can hold, either side of 1970
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+Moment = datetime | int | float | str
 
 
-def _coerce_unix_ms(value: datetime | int | float | str | None) -> int:
-    if value is None:
-        return int(datetime.now(UTC).timestamp() * 1000)
-
-    if isinstance(value, datetime):
-        date = value if value.tzinfo else value.replace(tzinfo=UTC)
-        return int(date.timestamp() * 1000)
-
-    if isinstance(value, int | float):
-        if not isfinite(value):
-            raise ValueError("Invalid timestamp provided")
-        return int(value if abs(value) >= 10_000_000_000 else value * 1000)
-
-    if isinstance(value, str):
-        text = value.strip()
-        if text.endswith("Z"):
-            text = f"{text[:-1]}+00:00"
-        date = datetime.fromisoformat(text)
-        if date.tzinfo is None:
-            date = date.replace(tzinfo=UTC)
-        return int(date.timestamp() * 1000)
-
-    raise TypeError("Argument must be a datetime, timestamp, ISO string, or None")
+def astro_time(unix_ms: int) -> astronomy.Time:
+    return astronomy.Time((unix_ms - _J2000) / MILLISECONDS_PER_DAY)
 
 
-def _utc_datetime(unix_ms: int) -> datetime:
-    return datetime.fromtimestamp(unix_ms / 1000, UTC)
+def unix_ms_of(time: astronomy.Time) -> int:
+    # Truncated toward zero, as JS `new Date(number)` does
+    return math.trunc(_J2000 + time.ut * MILLISECONDS_PER_DAY)
 
 
-def _truncate_longitude(longitude: float, precision: float) -> float:
-    if precision == float("inf"):
-        return longitude
-    factor = 10 ** int(precision)
-    return trunc(longitude * factor) / factor
+def december_solstice(year: int) -> int:
+    return unix_ms_of(astronomy.Seasons(year).dec_solstice)
 
 
-def _new_year_noon(solstice: datetime) -> int:
-    day = solstice.date()
-    if solstice.hour >= 12:
-        day = day + timedelta(days=1)
-    return int(datetime(day.year, day.month, day.day, 12, tzinfo=UTC).timestamp() * 1000)
+def june_solstice(year: int) -> int:
+    return unix_ms_of(astronomy.Seasons(year).jun_solstice)
 
 
-@lru_cache(maxsize=4096)
-def _calculate_year_context(artificial_year: int, longitude: float) -> tuple[int, int]:
-    start_new_year = _new_year_noon(december_solstice(artificial_year))
-    end_new_year = _new_year_noon(december_solstice(artificial_year + 1))
-    start = int(start_new_year + (-longitude + 180) * MILLISECONDS_PER_DAY / 360)
-    duration = int((end_new_year - start_new_year) / MILLISECONDS_PER_DAY)
-    return start, duration
+def utc_year(unix_ms: int) -> int:
+    # UTC year: the sky does not care which time zone the machine was sold in.
+    # Hinnant's civil-from-days, cut down to the year: integers only, any century.
+    era, day_of_era = divmod(unix_ms // MILLISECONDS_PER_DAY + 719_468, 146_097)
+    year_of_era = (day_of_era - day_of_era // 1460 + day_of_era // 36_524 - day_of_era // 146_096) // 365
+    day_of_year = day_of_era - (365 * year_of_era + year_of_era // 4 - year_of_era // 100)
+    return era * 400 + year_of_era + ((5 * day_of_year + 2) // 153 >= 10)
 
 
-@dataclass(frozen=True)
+def _new_year_noon(solstice: int) -> int:
+    day, rest = divmod(solstice, MILLISECONDS_PER_DAY)
+    return (day + (rest >= MILLISECONDS_PER_DAY // 2)) * MILLISECONDS_PER_DAY + MILLISECONDS_PER_DAY // 2
+
+
+@lru_cache(maxsize=1024)
+def _year_context(artificial_year: int, longitude: float) -> tuple[int, int]:
+    start = _new_year_noon(december_solstice(artificial_year))
+    end = _new_year_noon(december_solstice(artificial_year + 1))
+    return math.trunc(start + (-longitude + 180) * MILLISECONDS_PER_DAY / 360), (end - start) // MILLISECONDS_PER_DAY
+
+
+def is_real(value: object) -> bool:
+    return isinstance(value, Real) and not isinstance(value, bool)
+
+
+def unix_ms(moment: Moment | None) -> int:
+    """Unix milliseconds of a moment. A number is always milliseconds; None is now."""
+    if moment is None:
+        return clock.time_ns() // 1_000_000
+    if isinstance(moment, str):
+        moment = datetime.fromisoformat(moment)
+    if isinstance(moment, datetime):
+        # A naive datetime is read as UTC: no time zones here, a longitude is enough
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        micro = (moment - _UNIX_EPOCH) // timedelta(microseconds=1)
+        # Toward zero, like a JS Date, even before 1970
+        return micro // 1000 if micro >= 0 else -(-micro // 1000)
+    if not is_real(moment):
+        raise TypeError(f"Expected a datetime, Unix milliseconds, an ISO string or None, got {moment!r}")
+    if not -_JS_DATE_LIMIT <= moment <= _JS_DATE_LIMIT:
+        raise ValueError(f"Invalid Unix milliseconds: {moment!r}")
+    return math.trunc(moment)
+
+
+def time_of_event(nadir: int, event: int) -> float | None:
+    if not nadir <= event <= nadir + MILLISECONDS_PER_DAY:
+        return None
+    return (event - nadir) * (360 / MILLISECONDS_PER_DAY)
+
+
+@dataclass(frozen=True, init=False, order=True)
 class NaturalDate:
-    """Gregorian moment translated into the Natural Time calendar."""
+    """An instant read at a longitude: 13 moons of 28 days, and the sun at 360° a day.
+
+    `precision` is the number of longitude decimals the clock runs on (0: one zone
+    per degree), or `math.inf` for the exact longitude. Instances order by instant.
+    """
 
     unix_time: int
-    longitude: float = 0
-    precision: float = 0
-    effective_longitude: float = 0
-    year: int = 0
-    moon: int = 0
-    week: int = 0
-    week_of_moon: int = 0
-    day: int = 0
-    day_of_year: int = 0
-    day_of_moon: int = 0
-    day_of_week: int = 0
-    is_rainbow_day: bool = False
-    time: float = 0
-    year_start: int = 0
-    year_duration: int = 0
-    nadir: int = 0
+    longitude: float
+    precision: int | float
+    effective_longitude: float
+    year: int
+    moon: int
+    week: int
+    week_of_moon: int
+    day: int
+    day_of_year: int
+    day_of_moon: int
+    day_of_week: int
+    is_rainbow_day: bool
+    time: float
+    year_start: int
+    year_duration: int
+    nadir: int
 
-    MILLISECONDS_PER_DAY = MILLISECONDS_PER_DAY
-    END_OF_ARTIFICIAL_TIME = END_OF_ARTIFICIAL_TIME
+    def __init__(self, date: Moment | None = None, longitude: float | None = None, precision: int | float = 0) -> None:
+        if longitude is None:
+            longitude = 0.0
+        if not (is_real(longitude) and -180 <= longitude <= 180):
+            raise ValueError(f"Longitude must be between -180 and +180, got {longitude!r}")
+        if not (is_real(precision) and precision >= 0 and (precision == math.inf or float(precision).is_integer())):
+            raise ValueError(f"Precision must be a non-negative integer or math.inf, got {precision!r}")
 
-    def __init__(
-        self,
-        date: datetime | int | float | str | None = None,
-        longitude: float | None = None,
-        precision: float = 0,
-    ) -> None:
-        if longitude is not None and (not isinstance(longitude, int | float) or longitude < -180 or longitude > 180):
-            raise ValueError("Longitude must be between -180 and +180")
+        unix_time = unix_ms(date)
+        longitude = float(longitude or 0)  # -0.0 too: the meridian has one side
+        if precision != math.inf:
+            precision = int(precision)
+            effective = math.trunc(longitude * 10**precision * _HAIR) / 10**precision
+        else:
+            effective = longitude
 
-        unix_time = _coerce_unix_ms(date)
-        raw_longitude = float(longitude or 0)
-        effective_longitude = _truncate_longitude(raw_longitude, precision)
-        date_obj = _utc_datetime(unix_time)
-
-        year_start, year_duration = _calculate_year_context(date_obj.year - 1, effective_longitude)
+        year_start, year_duration = _year_context(utc_year(unix_time) - 1, effective)
         if unix_time - year_start >= year_duration * MILLISECONDS_PER_DAY:
-            year_start, year_duration = _calculate_year_context(date_obj.year, effective_longitude)
+            year_start, year_duration = _year_context(utc_year(unix_time), effective)
 
-        time_since_local_year_start = (unix_time - year_start) / MILLISECONDS_PER_DAY
-        end_year = _utc_datetime(END_OF_ARTIFICIAL_TIME).year
-        year = _utc_datetime(year_start).year - end_year + 1
-        day = floor(
-            (unix_time - (END_OF_ARTIFICIAL_TIME + (-effective_longitude + 180) * MILLISECONDS_PER_DAY / 360))
-            / MILLISECONDS_PER_DAY
+        days = (unix_time - year_start) / MILLISECONDS_PER_DAY
+        day_of_year = math.floor(days) + 1
+        nadir = year_start + math.floor(days) * MILLISECONDS_PER_DAY
+
+        # Frozen to the world: the constructor is the only hand that writes
+        vars(self).update(
+            unix_time=unix_time,
+            longitude=longitude,
+            precision=precision,
+            effective_longitude=effective,
+            year=utc_year(year_start) - utc_year(END_OF_ARTIFICIAL_TIME) + 1,
+            moon=math.floor(days / 28) + 1,
+            week=math.floor(days / 7) + 1,
+            week_of_moon=math.floor(days / 7) % 4 + 1,
+            day=math.floor(
+                (unix_time - (END_OF_ARTIFICIAL_TIME + (-effective + 180) * MILLISECONDS_PER_DAY / 360))
+                / MILLISECONDS_PER_DAY
+            ),
+            day_of_year=day_of_year,
+            day_of_moon=math.floor(days) % 28 + 1,
+            day_of_week=math.floor(days) % 7 + 1,
+            is_rainbow_day=day_of_year > 13 * 28,
+            time=(unix_time - nadir) * 360 / MILLISECONDS_PER_DAY,
+            year_start=year_start,
+            year_duration=year_duration,
+            nadir=nadir,
         )
-        day_of_year = int(time_since_local_year_start // 1) + 1
-        nadir = year_start + int(time_since_local_year_start // 1) * MILLISECONDS_PER_DAY
-
-        object.__setattr__(self, "unix_time", unix_time)
-        object.__setattr__(self, "longitude", raw_longitude)
-        object.__setattr__(self, "precision", precision)
-        object.__setattr__(self, "effective_longitude", effective_longitude)
-        object.__setattr__(self, "year", year)
-        object.__setattr__(self, "moon", int(time_since_local_year_start // 28) + 1)
-        object.__setattr__(self, "week", int(time_since_local_year_start // 7) + 1)
-        object.__setattr__(self, "week_of_moon", int(time_since_local_year_start // 7) % 4 + 1)
-        object.__setattr__(self, "day", day)
-        object.__setattr__(self, "day_of_year", day_of_year)
-        object.__setattr__(self, "day_of_moon", int(time_since_local_year_start // 1) % 28 + 1)
-        object.__setattr__(self, "day_of_week", int(time_since_local_year_start // 1) % 7 + 1)
-        object.__setattr__(self, "is_rainbow_day", day_of_year > 13 * 28)
-        object.__setattr__(self, "time", (unix_time - nadir) * 360 / MILLISECONDS_PER_DAY)
-        object.__setattr__(self, "year_start", year_start)
-        object.__setattr__(self, "year_duration", year_duration)
-        object.__setattr__(self, "nadir", nadir)
-
-    @property
-    def unixTime(self) -> int:
-        return self.unix_time
-
-    @property
-    def effectiveLongitude(self) -> float:
-        return self.effective_longitude
-
-    @property
-    def weekOfMoon(self) -> int:
-        return self.week_of_moon
-
-    @property
-    def dayOfYear(self) -> int:
-        return self.day_of_year
-
-    @property
-    def dayOfMoon(self) -> int:
-        return self.day_of_moon
-
-    @property
-    def dayOfWeek(self) -> int:
-        return self.day_of_week
-
-    @property
-    def isRainbowDay(self) -> bool:
-        return self.is_rainbow_day
-
-    @property
-    def yearStart(self) -> int:
-        return self.year_start
-
-    @property
-    def yearDuration(self) -> int:
-        return self.year_duration
 
     def as_datetime(self) -> datetime:
-        return _utc_datetime(self.unix_time)
+        """The same instant in artificial time, for whoever still needs it (years 1 to 9999 only)."""
+        return _UNIX_EPOCH + timedelta(milliseconds=self.unix_time)
 
-    def get_time_of_event(self, event: datetime | int | float | str) -> float | bool:
-        event_time = _coerce_unix_ms(event)
-        if event_time < self.nadir or event_time > self.nadir + MILLISECONDS_PER_DAY:
-            return False
-        return (event_time - self.nadir) * (360 / MILLISECONDS_PER_DAY)
-
-    def getTimeOfEvent(self, event: datetime | int | float | str) -> float | bool:
-        return self.get_time_of_event(event)
+    def get_time_of_event(self, event: Moment) -> float | None:
+        """Degrees of an instant within this natural day, or None when it falls outside."""
+        return time_of_event(self.nadir, unix_ms(event))
 
     def to_year_string(self) -> str:
-        sign = "-" if self.year < 0 else ""
-        return f"{sign}{abs(self.year):03d}"
+        return f"{'-' if self.year < 0 else ''}{abs(self.year):03d}"
 
     def to_moon_string(self) -> str:
         return f"{self.moon:02d}"
@@ -197,81 +194,33 @@ class NaturalDate:
 
     def to_date_string(self, separator: str = ")") -> str:
         if self.is_rainbow_day:
-            suffix = "+" if self.day_of_year == 366 else ""
-            return f"{self.to_year_string()}{separator}RAINBOW{suffix}"
+            return f"{self.to_year_string()}{separator}RAINBOW{'+' if self.day_of_year == 366 else ''}"
         return f"{self.to_year_string()}{separator}{self.to_moon_string()}{separator}{self.to_day_of_moon_string()}"
 
-    def to_time_string(self, decimals: int = 2, rounding: float = 0.01) -> str:
-        natural_time = self.time
-        if rounding > 0:
-            natural_time = int(natural_time / rounding + 0.5) * rounding
-            if natural_time >= 360:
-                natural_time = 0
-        integer_part = f"{int(natural_time):03d}"
-        if decimals <= 0:
-            return f"{integer_part}°"
-        decimal_part = f"{natural_time % 1:.{decimals}f}".split(".", 1)[1].ljust(decimals, "0")
-        return f"{integer_part}°{decimal_part}"
+    def to_time_string(self, decimals: int = 2) -> str:
+        """`202°63`: cut to `decimals`, never rounded: it is 202° until the sun reaches 203°."""
+        decimals = max(0, math.trunc(decimals))
+        scale = 10**decimals
+        # The hair added before the cut repairs floats (20263.999999999996 is 20264);
+        # it is far thinner than a millisecond of sun
+        total = math.floor(self.time * scale + 1e-6)
+        whole, fraction = total // scale % 360, total % scale
+        return f"{whole:03d}°" + (f"{fraction:0{decimals}d}" if decimals else "")
 
     def to_longitude_string(self, decimals: int | None = None) -> str:
+        """`NT+2.3`: the longitude as given, cut (never rounded) to `decimals`, `precision` by default.
+
+        NTZ is NT+0, and only that: what is left once the decimals are cut is zero.
+        """
         if decimals is None:
-            decimals = int(self.precision) if self.precision != float("inf") else 0
-        display_longitude = self.effective_longitude if self.precision != float("inf") else self.longitude
-        if abs(display_longitude) < 1:
+            decimals = self.precision if self.precision != math.inf else 0
+        decimals = max(0, math.trunc(decimals))
+        scale = 10**decimals
+        scaled = math.trunc(abs(self.longitude) * scale * _HAIR)
+        if scaled == 0:
             return "NTZ"
-        sign = "+" if display_longitude >= 0 else "-"
-        abs_longitude = abs(display_longitude)
-        integer_part = str(trunc(abs_longitude))
-        if decimals <= 0:
-            return f"NT{sign}{integer_part}"
-        decimal_part = f"{abs_longitude % 1:.{decimals}f}".split(".", 1)[1]
-        return f"NT{sign}{integer_part}.{decimal_part}"
+        sign = "+" if self.longitude >= 0 else "-"
+        return f"NT{sign}{math.floor(scaled / scale)}" + (f".{scaled % scale:0{decimals}d}" if decimals else "")
 
     def to_string(self) -> str:
         return f"{self.to_date_string()} {self.to_time_string()} {self.to_longitude_string()}"
-
-    def toDateString(self, separator: str = ")") -> str:
-        return self.to_date_string(separator)
-
-    def toTimeString(self, decimals: int = 2, rounding: float = 0.01) -> str:
-        return self.to_time_string(decimals, rounding)
-
-    def toLongitudeString(self, decimals: int | None = None) -> str:
-        return self.to_longitude_string(decimals)
-
-    def toYearString(self) -> str:
-        return self.to_year_string()
-
-    def toMoonString(self) -> str:
-        return self.to_moon_string()
-
-    def toDayOfMoonString(self) -> str:
-        return self.to_day_of_moon_string()
-
-    def toString(self) -> str:
-        return self.to_string()
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "unix_time": self.unix_time,
-            "longitude": self.longitude,
-            "precision": self.precision,
-            "effective_longitude": self.effective_longitude,
-            "year": self.year,
-            "moon": self.moon,
-            "week": self.week,
-            "week_of_moon": self.week_of_moon,
-            "day": self.day,
-            "day_of_year": self.day_of_year,
-            "day_of_moon": self.day_of_moon,
-            "day_of_week": self.day_of_week,
-            "is_rainbow_day": self.is_rainbow_day,
-            "time": self.time,
-            "year_start": self.year_start,
-            "year_duration": self.year_duration,
-            "nadir": self.nadir,
-            "date_string": self.to_date_string(),
-            "time_string": self.to_time_string(),
-            "longitude_string": self.to_longitude_string(),
-            "string": self.to_string(),
-        }
